@@ -1,0 +1,40 @@
+{
+  "_说明": "波段猎手持仓配置，自动更新",
+  "holdings": {
+    "齐心集团": {
+      "code": "sz002301",
+      "cost": 7.80,
+      "shares": 1000,
+      "mode": "swing_only",
+      "stop_pct": -1.0,
+      "swing_buy_zones": [7.2, 7.0, 6.7],
+      "swing_sell_zones": [8.3, 8.6, 8.9],
+      "swing_batch_shares": 200
+    },
+    "中油资本": {
+      "code": "sz000617",
+      "cost": 8.37,
+      "shares": 1500,
+      "mode": "swing_only",
+      "stop_pct": -1.0,
+      "swing_buy_zones": [7.0, 6.7, 6.3],
+      "swing_sell_zones": [8.5, 9.2, 10.0],
+      "swing_batch_shares": 300
+    }
+  },
+  "watchlist": {
+    "紫金矿业": {
+      "code": "sh601899",
+      "buy_zones": [28.0]
+    },
+    "金山办公": {
+      "code": "sh688111"
+    },
+    "科大讯飞": {
+      "code": "sz002230"
+    },
+    "海光信息": {
+      "code": "sh688041"
+    }
+  }
+}
