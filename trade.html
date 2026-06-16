@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>波段猎手 · 交易记录</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#0d1117; color:#e0e0e0;
+    font-family:-apple-system,'SF Pro','Helvetica Neue',Arial,sans-serif;
+    min-height:100vh; padding:16px; max-width:480px; margin:0 auto;
+  }
+  .header { text-align:center; padding:20px 0 24px; }
+  .header h1 { font-size:20px; color:#fff; margin-bottom:4px; }
+  .header p { font-size:13px; color:#888; }
+  .card { background:#161b22; border-radius:12px; padding:18px; margin-bottom:14px; border:1px solid #21262d; }
+  .card-title { font-size:15px; font-weight:bold; margin-bottom:14px; display:flex;align-items:center;gap:8px; }
+  label { display:block; font-size:13px; color:#aaa; margin-bottom:6px; }
+  select, input {
+    width:100%; padding:12px; background:#0d1117; color:#e0e0e0;
+    border:1px solid #30363d; border-radius:8px; font-size:15px;
+    outline:none; -webkit-appearance:none;
+  }
+  select:focus, input:focus { border-color:#58a6ff; }
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; }
+  .type-btns { display:flex; gap:10px; margin-bottom:2px; }
+  .type-btn {
+    flex:1; padding:12px; border-radius:8px; border:none; font-size:15px;
+    font-weight:bold; cursor:pointer; transition:all 0.2s;
+  }
+  .type-btn.active-buy { background:#e74c3c; color:#fff; }
+  .type-btn.inactive { background:#21262d; color:#666; }
+  .type-btn.active-sell { background:#2ecc71; color:#fff; }
+  .submit-btn {
+    width:100%; padding:14px; background:#3498db; color:#fff; border:none;
+    border-radius:8px; font-size:16px; font-weight:bold; cursor:pointer;
+    margin-top:6px; transition:background 0.2s;
+  }
+  .submit-btn:active { background:#2980b9; }
+  .submit-btn:disabled { background:#444; color:#777; cursor:not-allowed; }
+  .error { color:#e74c3c; font-size:13px; margin-top:8px; display:none; padding:8px;background:#3a1a1a;border-radius:6px;}
+  .success-box { text-align:center; padding:30px 20px; display:none; }
+  .success-box .check { font-size:48px; margin-bottom:12px; }
+  .success-box h2 { color:#2ecc71; font-size:18px; margin-bottom:8px; }
+  .success-box p { color:#aaa; font-size:13px; line-height:1.6; }
+  .current-info { font-size:12px; color:#888; line-height:1.8; }
+  .current-info strong { color:#e0e0e0; }
+  .hint { font-size:12px; color:#555; text-align:center; margin-top:16px; }
+  a { color:#58a6ff; text-decoration:none; }
+  /* Token input section */
+  .token-section { margin-bottom:14px; }
+  .token-input { font-size:13px !important; padding:10px !important; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📝 波段猎手 · 交易记录</h1>
+  <p>提交后下次分析自动更新成本和持仓</p>
+</div>
+
+<!-- Token 输入（URL中未携带时显示） -->
+<div class="card token-section" id="tokenSection" style="display:none">
+  <div class="card-title">🔑 验证码</div>
+  <label>请输入交易验证码（从推送消息链接中获得）</label>
+  <input type="text" id="tokenInput" class="token-input" placeholder="粘贴验证码">
+</div>
+
+<div id="formArea">
+  <!-- 当前持仓概览 -->
+  <div class="card">
+    <div class="card-title">💼 当前持仓</div>
+    <div class="current-info" id="holdingsInfo">加载中...</div>
+  </div>
+
+  <!-- 交易表单 -->
+  <div class="card">
+    <div class="card-title">📋 填写交易</div>
+
+    <label>股票</label>
+    <select id="tStock">
+      <option value="">-- 选择股票 --</option>
+      <option value="齐心集团">齐心集团 (002301)</option>
+      <option value="中油资本">中油资本 (000617)</option>
+      <option value="紫金矿业">紫金矿业 (601899)</option>
+    </select>
+
+    <label style="margin-top:12px">方向</label>
+    <div class="type-btns">
+      <button class="type-btn active-buy" id="btnBuy" onclick="setType('buy')">🔴 买入</button>
+      <button class="type-btn inactive" id="btnSell" onclick="setType('sell')">🟢 卖出</button>
+    </div>
+
+    <label style="margin-top:12px">成交价格</label>
+    <input type="number" id="tPrice" step="0.01" placeholder="例如：7.37">
+
+    <label style="margin-top:12px">数量（股）</label>
+    <input type="number" id="tShares" placeholder="例如：500">
+
+    <button class="submit-btn" onclick="submitTrade()" id="submitBtn">✅ 提交交易记录</button>
+    <div class="error" id="errorMsg"></div>
+  </div>
+
+  <!-- 最近提交记录 -->
+  <div class="card" id="recentCard" style="display:none">
+    <div class="card-title">📜 最近提交的记录</div>
+    <div class="current-info" id="recentTrades"></div>
+  </div>
+</div>
+
+<!-- 成功提示 -->
+<div class="card success-box" id="successArea">
+  <div class="check">✅</div>
+  <h2>提交成功！</h2>
+  <p>你的交易记录已保存。<br>下次分析（9:00 / 14:20）将自动更新成本。<br><br><a href="#" onclick="resetForm()">继续提交下一笔</a></p>
+</div>
+
+<p class="hint">波段猎手 v2 · 数据存储于 GitHub</p>
+
+<script>
+  var tradeType = 'buy';
+  var REPO = 'ShiHui1997/stock-notifier';
+  var gToken = '';
+
+  // 从 URL 参数获取 token
+  function getTokenFromUrl() {
+    var params = new URLSearchParams(window.location.search);
+    return params.get('t') || params.get('token') || '';
+  }
+
+  // 初始化
+  (function init() {
+    gToken = getTokenFromUrl();
+    if (!gToken) {
+      document.getElementById('tokenSection').style.display = 'block';
+    }
+    loadHoldings();
+    loadRecentTrades();
+  })();
+
+  function setType(t) {
+    tradeType = t;
+    var bBuy = document.getElementById('btnBuy');
+    var bSell = document.getElementById('btnSell');
+    if (t === 'buy') {
+      bBuy.className = 'type-btn active-buy';
+      bSell.className = 'type-btn inactive';
+    } else {
+      bBuy.className = 'type-btn inactive';
+      bSell.className = 'type-btn active-sell';
+    }
+  }
+
+  function getToken() {
+    if (gToken) return gToken;
+    var manual = document.getElementById('tokenInput').value.trim();
+    if (!manual) {
+      showError('请先输入验证码');
+      return null;
+    }
+    gToken = manual;
+    return manual;
+  }
+
+  async function apiCall(url, options) {
+    var token = getToken();
+    if (!token) return null;
+    options = options || {};
+    options.headers = Object.assign(options.headers || {}, {
+      'Authorization': 'token ' + token,
+      'Accept': 'application/vnd.github.v3+json'
+    });
+    try {
+      var res = await fetch(url, options);
+      return await res.json();
+    } catch(e) {
+      showError('网络错误：' + e.message);
+      return null;
+    }
+  }
+
+  async function loadHoldings() {
+    var data = await apiCall(
+      'https://api.github.com/repos/' + REPO + '/contents/holdings_config.json'
+    );
+    if (!data || !data.content) {
+      document.getElementById('holdingsInfo').innerHTML = '<span style="color:#e74c3c">无法加载持仓数据</span>';
+      return;
+    }
+    try {
+      var config = JSON.parse(atob(data.content));
+      var html = '';
+      for (var name in config.holdings) {
+        var h = config.holdings[name];
+        html += '<strong>' + name + '</strong>: 成本' + h.cost + ' | ' + h.shares + '股 | 模式:' + (h.mode||'标准') + '<br>';
+      }
+      document.getElementById('holdingsInfo').innerHTML = html || '暂无持仓';
+    } catch(e) {
+      document.getElementById('holdingsInfo').innerHTML = '<span style="color:#e74c3c">数据解析失败</span>';
+    }
+  }
+
+  async function loadRecentTrades() {
+    var data = await apiCall(
+      'https://api.github.com/repos/' + REPO + '/contents/pending_trades.json'
+    );
+    if (!data || !data.content) return;
+    try {
+      var td = JSON.parse(atob(data.content));
+      if (td.trades && td.trades.length > 0) {
+        var recent = td.trades.slice(-5).reverse();
+        var html = '';
+        for (var i = 0; i < recent.length; i++) {
+          var t = recent[i];
+          var icon = t.type === 'buy' ? '🔴' : '🟢';
+          var label = t.type === 'buy' ? '买入' : '卖出';
+          html += icon + ' ' + t.name + ' ' + label + ' ' + t.price + '×' + t.shares + ' (' + t.date + ')<br>';
+        }
+        document.getElementById('recentTrades').innerHTML = html;
+        document.getElementById('recentCard').style.display = 'block';
+      }
+    } catch(e) {}
+  }
+
+  async function submitTrade() {
+    var stock = document.getElementById('tStock').value;
+    var price = parseFloat(document.getElementById('tPrice').value);
+    var shares = parseInt(document.getElementById('tShares').value);
+
+    if (!stock) { showError('请选择股票'); return; }
+    if (!price || price <= 0) { showError('请填写有效的成交价格'); return; }
+    if (!shares || shares <= 0) { showError('请填写有效的数量'); return; }
+    if (!getToken()) return;
+
+    hideError();
+    var btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ 提交中...';
+
+    var trade = {
+      date: new Date().toISOString().split('T')[0],
+      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      name: stock,
+      type: tradeType,
+      price: price,
+      shares: shares
+    };
+
+    // 获取当前 pending_trades.json
+    var getRes = await fetch(
+      'https://api.github.com/repos/' + REPO + '/contents/pending_trades.json',
+      { headers: { 'Authorization': 'token ' + gToken, 'Accept': 'application/vnd.github.v3+json' }}
+    );
+    var getData = await getRes.json();
+
+    if (!getData.content) {
+      btn.disabled = false;
+      btn.textContent = '✅ 提交交易记录';
+      showError('获取交易记录失败：' + (getData.message || '未知错误'));
+      return;
+    }
+
+    var content = JSON.parse(atob(getData.content));
+    content.trades.push(trade);
+
+    // 写回 GitHub
+    var putRes = await fetch(
+      'https://api.github.com/repos/' + REPO + '/contents/pending_trades.json',
+      {
+        method: 'PUT',
+        headers: {
+          'Authorization': 'token ' + gToken,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message: '交易: ' + (tradeType === 'buy' ? '买入' : '卖出') + ' ' + stock + ' ' + price + 'x' + shares,
+          content: btoa(unescape(encodeURIComponent(JSON.stringify(content, null, 2)))),
+          sha: getData.sha
+        })
+      }
+    );
+
+    btn.disabled = false;
+    btn.textContent = '✅ 提交交易记录';
+
+    if (putRes.ok) {
+      document.getElementById('formArea').style.display = 'none';
+      document.getElementById('successArea').style.display = 'block';
+    } else {
+      var errData = await putRes.json();
+      showError('提交失败：' + (errData.message || '未知错误(' + putRes.status + ')'));
+    }
+  }
+
+  function showError(msg) {
+    var el = document.getElementById('errorMsg');
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+  function hideError() {
+    document.getElementById('errorMsg').style.display = 'none';
+  }
+
+  function resetForm() {
+    document.getElementById('successArea').style.display = 'none';
+    document.getElementById('formArea').style.display = 'block';
+    document.getElementById('tPrice').value = '';
+    document.getElementById('tShares').value = '';
+    document.getElementById('tStock').value = '';
+    setType('buy');
+    hideError();
+  }
+</script>
+</body>
+</html>
