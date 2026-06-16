@@ -1,0 +1,15 @@
+name: Stock Afternoon Report (尾盘 14:20)
+on:
+  schedule:
+    - cron: '20 6 * * 1-5'
+  workflow_dispatch:
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run stock notifier
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          PERIOD: 尾盘
+        run: python3 stock_notifier.py
