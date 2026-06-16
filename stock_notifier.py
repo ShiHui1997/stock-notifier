@@ -10,7 +10,8 @@ import re
 import os
 import sys
 import io
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+TZ_BEIJING = timezone(timedelta(hours=8))
 
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -460,7 +461,7 @@ def run():
         config = load_config()
         holdings = config.get("holdings", {})
 
-    now = datetime.now()
+    now = datetime.now(TZ_BEIJING)
     dow = ["一","二","三","四","五","六","日"][now.weekday()]
     lines = [f"📊 波段猎手 · 周{dow}{PERIOD}", f"{now.strftime('%m/%d %H:%M')}", ""]
 
