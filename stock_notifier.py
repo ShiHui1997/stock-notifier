@@ -1,125 +1,37 @@
 """
-波段猎手 · 云端推送版 v3
-GitHub Actions 每日定时运行，通过 PushPlus 推送到微信
-v3 改进：交易记录改为独立页面链接（PushPlus 过滤 form/script，内嵌表单不可用）
+波段猎手 · 每日盯盘分析脚本 v2
+用法: python stock_analyzer.py [--wechat]
+  --wechat   输出微信助手适配的紧凑格式
+配置: 修改 stock_config.json 即可更新成本/目标，无需改代码
 """
 import urllib.request
-import urllib.parse
 import json
 import re
-import os
 import sys
 import io
+import os
 from datetime import datetime
 
+# 修复 Windows 控制台编码问题
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-
-# ========== 环境变量 ==========
-PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "5061c14a3f6e4a82abb0fc9f11879aff")
-TRADE_TOKEN = os.environ.get("TRADE_TOKEN", "")
-REPO = os.environ.get("GITHUB_REPOSITORY", "ShiHui1997/stock-notifier")
-PERIOD = os.environ.get("PERIOD", "早盘")
 
 # ========== 配置加载 ==========
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-def load_json(filename):
-    path = os.path.join(SCRIPT_DIR, filename)
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-def save_json(filename, data):
-    path = os.path.join(SCRIPT_DIR, filename)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+CONFIG_PATH = os.path.join(SCRIPT_DIR, "stock_config.json")
 
 def load_config():
-    return load_json("holdings_config.json")
-
-# ========== 交易处理 ==========
-def process_pending_trades():
-    """处理用户提交的交易记录，更新成本和持仓"""
-    try:
-        pending = load_json("pending_trades.json")
-    except Exception:
-        return []
-
-    trades = pending.get("trades", [])
-    if not trades:
-        return []
-
-    config = load_config()
-    applied = []
-
-    for trade in trades:
-        name = trade.get("name", "")
-        t_type = trade.get("type", "")
-        price = float(trade.get("price", 0))
-        shares = int(trade.get("shares", 0))
-
-        if name not in config["holdings"]:
-            print(f"[交易处理] 未知股票: {name}，跳过")
-            applied.append({**trade, "status": "skipped", "reason": "未知股票"})
-            continue
-
-        h = config["holdings"][name]
-        old_cost = h.get("cost", 0)
-        old_shares = h.get("shares", 0)
-
-        if t_type == "buy":
-            total_cost = old_cost * old_shares + price * shares
-            new_shares = old_shares + shares
-            h["cost"] = round(total_cost / new_shares, 3) if new_shares > 0 else old_cost
-            h["shares"] = new_shares
-            print(f"[交易处理] 买入 {name} {price}x{shares} 成本 {old_cost:.2f}->{h['cost']:.2f} 仓位 {old_shares}->{new_shares}")
-        elif t_type == "sell":
-            if shares > old_shares:
-                print(f"[交易处理] 卖出量{shares}超过持仓{old_shares}，调整为清仓")
-                shares = old_shares
-            h["shares"] = max(0, old_shares - shares)
-            print(f"[交易处理] 卖出 {name} {price}x{shares} 仓位 {old_shares}->{h['shares']}")
-        else:
-            applied.append({**trade, "status": "skipped", "reason": f"未知类型:{t_type}"})
-            continue
-
-        applied.append({
-            **trade,
-            "status": "applied",
-            "old_cost": old_cost,
-            "new_cost": h["cost"],
-            "old_shares": old_shares,
-            "new_shares": h["shares"]
-        })
-
-    # 保存更新后的配置
-    save_json("holdings_config.json", config)
-    # 清空已处理的交易
-    save_json("pending_trades.json", {"_说明": "用户通过交易页面提交的交易记录。分析脚本会自动处理并清空。", "trades": []})
-
-    return applied
-
-
-def generate_trade_log(trades):
-    """生成交易处理日志，附加到推送消息"""
-    if not trades:
-        return ""
-    lines = ["", "━━━ 📝 已处理的交易 ━━━"]
-    for t in trades:
-        if t.get("status") == "applied":
-            act = "买入" if t["type"] == "buy" else "卖出"
-            lines.append(f"  {act} {t['name']} {t['price']}元 x {t['shares']}股")
-            if t["type"] == "buy":
-                lines.append(f"  → 成本 {t['old_cost']:.2f} -> {t['new_cost']:.2f}")
-            lines.append(f"  -> 仓位 {t['old_shares']} -> {t['new_shares']}股")
-        elif t.get("status") == "skipped":
-            lines.append(f"  ⚠️ {t.get('name','')} 跳过: {t.get('reason','')}")
-    return "\n".join(lines)
-
+    """从 stock_config.json 加载持仓和关注标的配置"""
+    if not os.path.exists(CONFIG_PATH):
+        print(f"❌ 配置文件不存在: {CONFIG_PATH}")
+        return None, None
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    return cfg.get("holdings", {}), cfg.get("watchlist", {})
 
 # ========== 数据获取 ==========
-def fetch_stock(code):
+def fetch_stock_data(code):
+    """从新浪财经获取实时行情"""
     url = f"http://hq.sinajs.cn/list={code}"
     headers = {"Referer": "https://finance.sina.com.cn"}
     try:
@@ -137,428 +49,318 @@ def fetch_stock(code):
                     "price": float(fields[3]) if fields[3] else 0,
                     "high": float(fields[4]) if fields[4] else 0,
                     "low": float(fields[5]) if fields[5] else 0,
+                    "volume": float(fields[8]) if fields[8] else 0,
+                    "amount": float(fields[9]) if fields[9] else 0,
                 }
     except Exception as e:
         return {"error": str(e)}
     return {"error": "parse failed"}
 
-
-# ========== 分析 ==========
-def analyze(name, cfg, data):
+# ========== 分析逻辑 ==========
+def analyze_holding(name, config, data):
+    """分析持仓标的，返回完整分析结果"""
     if "error" in data:
-        return {"name": name, "status": "error"}
+        return {"name": name, "status": "error", "msg": data["error"]}
 
+    cost = config["cost"]
     price = data["price"]
-    cost = cfg["cost"]
-    mode = cfg.get("mode", "swing_only")
-    pct = (price - cost) / cost * 100
+    change_pct = (price - cost) / cost * 100
+    target_price = round(cost * (1 + config["target_pct"]), 2)
+    stop_price = round(cost * (1 + config["stop_pct"]), 2)
+    to_target = round((target_price - price) / price * 100, 1)
+    to_stop = round((price - stop_price) / price * 100, 1)
 
     result = {
-        "name": name, "price": price, "cost": cost,
-        "change_pct": round(pct, 2), "mode": mode,
+        "name": name,
+        "code": config["code"],
+        "price": price,
+        "open": data["open"],
+        "high": data["high"],
+        "low": data["low"],
+        "cost": cost,
+        "change_pct": round(change_pct, 2),
+        "target_price": target_price,
+        "stop_price": stop_price,
+        "to_target_pct": to_target,
+        "to_stop_pct": to_stop,
+        "half_sell_pct": config.get("half_sell_pct", 0.5),
+        "mode": config.get("mode", "standard"),
     }
 
-    if mode == "swing_only":
-        buy_z = cfg.get("swing_buy_zones", [])
-        sell_z = cfg.get("swing_sell_zones", [])
-        batch = cfg.get("swing_batch_shares", 200)
+    # 波段模式：信号判定不同
+    mode = config.get("mode", "standard")
 
-        if any(price >= z for z in sell_z):
-            zone = [z for z in sell_z if price >= z][0]
+    if mode == "swing":
+        swing_buy = config.get("swing_buy_zones", [])
+        swing_sell = config.get("swing_sell_zones", [])
+        swing_batch = config.get("swing_batch_shares", 200)
+
+        # 先检查是否到了止盈目标（原始仓位仍用标准规则）
+        if price >= target_price:
+            result["signal"] = "SELL"
+            result["signal_emoji"] = "🔔"
+            result["signal_label"] = "止盈卖出"
+            result["action"] = f"卖{int(config.get('half_sell_pct',0.5)*100)}%"
+        elif price <= stop_price:
+            result["signal"] = "STOP"
+            result["signal_emoji"] = "🛑"
+            result["signal_label"] = "止损清仓"
+            result["action"] = "全清"
+        elif any(price >= z for z in swing_sell):
+            # 到了波段卖出区 → 卖出做T的份额
+            sell_zone = [z for z in swing_sell if price >= z][0]
             result["signal"] = "SWING_SELL"
-            result["emoji"] = "📈"
-            result["label"] = f"做T卖出@{zone}"
-            result["action"] = f"卖{batch}股"
-        elif any(price <= z for z in buy_z):
-            zone = [z for z in buy_z if price <= z][-1]
+            result["signal_emoji"] = "🔄"
+            result["signal_label"] = f"波段卖出@{sell_zone}"
+            result["action"] = f"卖{swing_batch}股做T"
+        elif any(price <= z for z in swing_buy):
+            # 到了波段买入区 → 买入做T
+            buy_zone = [z for z in swing_buy if price <= z][-1]
             result["signal"] = "SWING_BUY"
-            result["emoji"] = "📉"
-            result["label"] = f"做T买入@{zone}"
-            result["action"] = f"买{batch}股"
+            result["signal_emoji"] = "🔄"
+            result["signal_label"] = f"波段买入@{buy_zone}"
+            result["action"] = f"买{swing_batch}股做T"
         else:
             result["signal"] = "HOLD"
-            result["emoji"] = "⏸"
-            result["label"] = "持有等波段"
+            result["signal_emoji"] = "⏸"
+            result["signal_label"] = "持有等波段"
             result["action"] = "不动"
+
+    elif mode == "swing_only":
+        # 纯做T模式：不止损，只看波段买卖区间
+        swing_buy = config.get("swing_buy_zones", [])
+        swing_sell = config.get("swing_sell_zones", [])
+        swing_batch = config.get("swing_batch_shares", 200)
+
+        if any(price >= z for z in swing_sell):
+            sell_zone = [z for z in swing_sell if price >= z][0]
+            result["signal"] = "SWING_SELL"
+            result["signal_emoji"] = "📈"
+            result["signal_label"] = f"做T卖出@{sell_zone}"
+            result["action"] = f"卖{swing_batch}股"
+        elif any(price <= z for z in swing_buy):
+            buy_zone = [z for z in swing_buy if price <= z][-1]
+            result["signal"] = "SWING_BUY"
+            result["signal_emoji"] = "📉"
+            result["signal_label"] = f"做T买入@{buy_zone}"
+            result["action"] = f"买{swing_batch}股"
+        else:
+            result["signal"] = "HOLD"
+            result["signal_emoji"] = "⏸"
+            result["signal_label"] = "持有等波段"
+            result["action"] = "不动"
+
     else:
-        result["signal"] = "HOLD"
-        result["emoji"] = "⏸"
-        result["label"] = "持有等待"
-        result["action"] = "不动"
+        # 标准模式
+        if price >= target_price:
+            result["signal"] = "SELL"
+            result["signal_emoji"] = "🔔"
+            result["signal_label"] = "止盈卖出"
+            result["action"] = f"卖{int(config.get('half_sell_pct',0.5)*100)}%"
+        elif price <= stop_price:
+            result["signal"] = "STOP"
+            result["signal_emoji"] = "🛑"
+            result["signal_label"] = "止损清仓"
+            result["action"] = "全清"
+        elif price >= cost and change_pct > 0:
+            result["signal"] = "WATCH"
+            result["signal_emoji"] = "👀"
+            result["signal_label"] = "回本观察"
+            result["action"] = "考虑减仓"
+        elif to_stop < 3:
+            result["signal"] = "WARN"
+            result["signal_emoji"] = "⚠️"
+            result["signal_label"] = "逼近止损"
+            result["action"] = "准备割"
+        else:
+            result["signal"] = "HOLD"
+            result["signal_emoji"] = "⏸"
+            result["signal_label"] = "持有等待"
+            result["action"] = "不动"
 
     return result
 
-
-# ========== 新闻分析模块 ==========
-# 新闻关键词与影响因素配置
-NEWS_CONFIG = {
-    "齐心集团": {
-        "keywords": ["齐心集团", "002301"],
-        "sector": "办公集采/B2B电商",
-        "impact_factors": ["信创政策", "政企集采", "办公耗材", "B2B电商"]
-    },
-    "中油资本": {
-        "keywords": ["中油资本", "000617"],
-        "sector": "石油金融",
-        "impact_factors": ["国际油价", "中石油集团", "成品油", "金融监管"]
-    },
-    "紫金矿业": {
-        "keywords": ["紫金矿业", "601899"],
-        "sector": "有色金属/黄金",
-        "impact_factors": ["金价", "黄金", "铜价", "有色金属", "美联储"]
-    }
-}
-
-MACRO_CODES = {
-    "sh000001": ("上证指数", "📊"),
-    "sz399006": ("创业板指", "🚀"),
-    "hf_GC":   ("COMEX黄金", "🥇"),
-    "hf_CL":   ("WTI原油", "🛢️"),
-    "hf_HG":   ("COMEX铜", "🔨"),
-}
-
-def fetch_commodity(code):
-    """大宗商品期货价格（Sina hf_ 接口）"""
-    url = f"http://hq.sinajs.cn/list={code}"
-    headers = {"Referer": "https://finance.sina.com.cn"}
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = resp.read().decode("gbk")
-        m = re.search(r'"(.+)"', data)
-        if m:
-            fields = m.group(1).split(",")
-            if len(fields) >= 4 and fields[1] and fields[3]:
-                price = float(fields[1])
-                prev  = float(fields[3])
-                pct   = (price - prev) / prev * 100
-                return {"price": price, "pct": round(pct, 2)}
-    except Exception as e:
-        print(f"[大宗] {code} 失败: {e}")
-    return None
-
-
-def fetch_macro_overview():
-    """获取大盘指数 + 大宗商品数据"""
-    results = {}
-    for code, (name, icon) in MACRO_CODES.items():
-        if code.startswith("hf_"):
-            d = fetch_commodity(code)
-            if d:
-                results[code] = {"name": name, "icon": icon,
-                                  "price": d["price"], "pct": d["pct"], "is_comm": True}
-        else:
-            d = fetch_stock(code)
-            if "error" not in d and d["price"] and d["prev_close"]:
-                pct = (d["price"] - d["prev_close"]) / d["prev_close"] * 100
-                results[code] = {"name": name, "icon": icon,
-                                  "price": d["price"], "pct": round(pct, 2), "is_comm": False}
-    return results
-
-
-def fetch_announcements(stock_code, limit=3):
-    """巨潮资讯 — 个股公告（JSON接口）"""
-    url = ("http://www.cninfo.com.cn/new/fulltextSearch/full"
-            f"?searchkey={urllib.parse.quote(stock_code)}"
-            "&sdate=&edate=&isfulltext=false"
-            "&sortName=pubdate&sortType=desc"
-            f"&pageNum=1&pageSize={limit}")
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "http://www.cninfo.com.cn"
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        # 巨潮资讯返回体格式可能有 annals / data / list 等 key
-        items = []
-        for key in ("annals", "data", "list", "announcements"):
-            if key in data and isinstance(data[key], list):
-                items = data[key]
-                break
-        results = []
-        for item in items[:limit]:
-            title = item.get("title", item.get("docTitle", "")).strip()
-            date  = item.get("pubdate", item.get("publishDate", ""))[:10]
-            if title:
-                results.append({"title": title, "date": date})
-        return results
-    except Exception as e:
-        print(f"[公告] 巨潮资讯({stock_code}): {e}")
-        return []
-
-
-def fetch_news_sina(keyword, limit=5):
-    """新浪财经新闻搜索 API"""
-    try:
-        kw  = urllib.parse.quote(keyword)
-        url = f"https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2516&k={kw}&num={limit}"
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)",
-            "Referer": "https://finance.sina.com.cn"
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        articles = []
-        for item in data.get("result", {}).get("list", [])[:limit]:
-            title = item.get("title", "").strip()
-            title = re.sub(r"<[^>]+>", "", title)
-            if title and len(title) > 6:
-                articles.append({"title": title})
-        return articles
-    except Exception as e:
-        print(f"[新闻] 新浪({keyword}): {e}")
-        return []
-
-
-def get_stock_news(name, limit=3):
-    """获取单只股票的新闻+公告（多源去重）"""
-    ncfg = NEWS_CONFIG.get(name, {})
-    keywords = ncfg.get("keywords", [name])
-    seen    = set()
-    articles = []
-
-    # 1. 公司公告（巨潮资讯，优先级最高）
-    for kw in keywords:
-        if len(articles) >= limit:
-            break
-        anns = fetch_announcements(kw, limit=2)
-        for a in anns:
-            t = f"【公告】{a['title']}"
-            if t not in seen:
-                seen.add(t)
-                articles.append({"title": t})
-
-    # 2. 新闻搜索（新浪）
-    for kw in keywords:
-        if len(articles) >= limit:
-            break
-        news = fetch_news_sina(kw, limit=5)
-        for a in news:
-            if a["title"] not in seen:
-                seen.add(a["title"])
-                articles.append(a)
-
-    return articles[:limit]
-
-
-def generate_news_section(config):
-    """生成新闻分析板块（纯文本，插入推送内容）"""
-    holdings  = config.get("holdings", {})
-    watchlist = config.get("watchlist", {})
-    lines     = []
-
-    # 1. 大盘 + 大宗商品
-    macro = fetch_macro_overview()
-    if macro:
-        lines.append("━━━ 📰 早间速览 ━━━")
-        lines.append("【大盘与商品】")
-        for code, d in macro.items():
-            sign = "🔴" if d["pct"] < 0 else ("🟢" if d["pct"] > 0 else "⚪")
-            if d.get("is_comm"):
-                lines.append(f"  {d['icon']} {d['name']} ${d['price']:.2f} {sign}{d['pct']:+.2f}%")
-            else:
-                lines.append(f"  {d['icon']} {d['name']} {d['price']:.2f} {sign}{d['pct']:+.2f}%")
-        lines.append("")
-
-    # 2. 个股新闻
-    stocks_to_check = list(holdings.keys())
-    if "紫金矿业" in watchlist:
-        stocks_to_check.append("紫金矿业")
-
-    any_news = False
-    for name in stocks_to_check:
-        ncfg   = NEWS_CONFIG.get(name)
-        if not ncfg:
-            continue
-        articles = get_stock_news(name, limit=3)
-        if articles:
-            any_news = True
-            lines.append(f"【{name}·{ncfg['sector']}】")
-            for i, a in enumerate(articles, 1):
-                title = a["title"][:48] + "..." if len(a["title"]) > 48 else a["title"]
-                lines.append(f"  {i}. {title}")
-            lines.append(f"  ⚡ 关注: {', '.join(ncfg['impact_factors'])}")
-            lines.append("")
-
-    if not any_news and not macro:
-        return ""   # 无数据，不显示该板块
-
-    if not any_news and macro:
-        lines.append("  个股新闻/公告暂未获取（非交易时段或接口延迟）")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-# ========== 交易记录链接（替代内嵌表单） ==========
-def generate_trade_link():
-    """
-    PushPlus 会过滤 <form> <script> <button onclick> 等交互元素，
-    所以内嵌表单无法在微信中显示。
-    改为生成一个可点击的链接，跳转到独立的交易记录页面（trade.html）。
-    页面通过 GitHub Pages 或 jsDelivr CDN 提供。
-    """
-    token = TRADE_TOKEN
-
-    # GitHub Pages 地址（需用户在仓库 Settings > Pages 中启用）
-    pages_url = f"https://shui1997.github.io/stock-notifier/trade.html"
-
-    # jsDelivr CDN 备用地址（无需启用 Pages，但首次加载较慢）
-    cdn_url = f"https://cdn.jsdelivr.net/gh/{REPO}/main/trade.html"
-
-    if token:
-        link_url = f"{pages_url}?t={token}"
-    else:
-        link_url = pages_url
-
-    return f"""
-<div style="background:#1a2744;border-radius:10px;padding:16px;margin-top:10px;border-left:3px solid #3498db;text-align:center">
-  <div style="color:#3498db;font-weight:bold;font-size:15px;margin-bottom:10px">📝 记录买卖交易</div>
-  <a href="{link_url}" style="display:inline-block;padding:13px 30px;background:#3498db;color:#fff;text-decoration:none;border-radius:8px;font-size:16px;font-weight:bold">👆 点击这里记录交易</a>
-  <p style="color:#777;font-size:12px;margin-top:8px">提交后下次分析自动更新成本和持仓</p>
-</div>"""
-
-
-# ========== 推送 ==========
-def push_wechat(title, content, trade_html=""):
-    # 分析报告部分 — 用 pre 标签保持格式
-    report_html = content.replace("\n", "<br>")
-    report_html = (
-        '<pre style="font-family:Consolas,monospace;font-size:14px;'
-        'line-height:1.7;background:#161b22;color:#e0e0e0;'
-        'padding:16px;border-radius:8px;white-space:pre-wrap">'
-        + report_html +
-        '</pre>'
-    )
-
-    # 完整 HTML = 报告 + 交易链接
-    full_html = report_html + (trade_html or "")
-
-    payload = json.dumps({
-        "token": PUSHPLUS_TOKEN,
-        "title": title,
-        "content": full_html,
-        "template": "html"
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        "https://www.pushplus.plus/send",
-        data=payload,
-        headers={"Content-Type": "application/json"}
-    )
-    resp = urllib.request.urlopen(req, timeout=10)
-    return json.loads(resp.read().decode())
-
-
-# ========== 主流程 ==========
-def run():
-    config = load_config()
-    holdings = config.get("holdings", {})
-    watchlist = config.get("watchlist", {})
-
-    # 1. 先处理待处理的交易
-    applied_trades = process_pending_trades()
-    if applied_trades:
-        config = load_config()
-        holdings = config.get("holdings", {})
-
+# ========== 输出格式化 ==========
+def format_wechat(holdings_signals, watch_results, cash_status, holdings_cfg=None):
+    """微信适配的紧凑输出格式"""
+    lines = []
     now = datetime.now()
-    dow = ["一","二","三","四","五","六","日"][now.weekday()]
-    lines = [f"📊 波段猎手 · 周{dow}{PERIOD}", f"{now.strftime('%m/%d %H:%M')}", ""]
+    day_of_week = ["一","二","三","四","五","六","日"][now.weekday()]
 
-    # 新闻速览（早盘推送时显示）
-    if PERIOD == "早盘":
-        news_section = generate_news_section(config)
-        if news_section:
-            lines.append(news_section)
+    lines.append(f"📊 波段猎手 · 周{day_of_week}早报")
+    lines.append(f"{now.strftime('%m/%d %H:%M')}")
+    lines.append("")
 
     # 持仓分析
     lines.append("━━━ 持仓 ━━━")
-    has_action = False
-    for name, cfg in holdings.items():
-        data = fetch_stock(cfg["code"])
-        r = analyze(name, cfg, data)
-        if r.get("status") == "error":
-            lines.append(f"❌ {name}: 数据获取失败")
+    for s in holdings_signals:
+        if s.get("status") == "error":
+            lines.append(f"❌ {s['name']}: 数据获取失败")
             continue
 
-        chg = f"{r['change_pct']:+.1f}%"
-        sign = "🔴" if r['change_pct'] < 0 else ("🟢" if r['change_pct'] > 0 else "⚪")
-        lines.append(f"{r['emoji']} {name} {sign}{chg}")
-        shares_info = f" ({r['cost']:.2f}x{cfg.get('shares','?')}股)" if cfg.get('shares') else ""
-        lines.append(f"   现价{r['price']:.2f} | 成本{r['cost']:.2f} | 浮亏/盈{r['change_pct']:+.1f}%{shares_info}")
-        lines.append(f"   【{r['label']}】-> {r['action']}")
+        chg = f"{s['change_pct']:+.1f}%"
+        chg_sign = "🔴" if s['change_pct'] < 0 else ("🟢" if s['change_pct'] > 0 else "⚪")
 
-        buy_z = cfg.get("swing_buy_zones", [])
-        sell_z = cfg.get("swing_sell_zones", [])
-        batch = cfg.get("swing_batch_shares", 200)
-        lines.append(f"   📉 买入: {','.join(str(z) for z in buy_z)} (每批{batch}股)")
-        lines.append(f"   📈 卖出: {','.join(str(z) for z in sell_z)} (每批{batch}股)")
+        lines.append(f"{s['signal_emoji']} {s['name']} {chg_sign}{chg}")
+        
+        if s.get("mode") == "swing_only":
+            # 纯做T模式：不显示止损，显示硬扛
+            lines.append(f"   现价{s['price']:.2f} | 成本{s['cost']:.2f} | 浮亏/盈{(s['price']-s['cost'])/s['cost']*100:+.1f}%")
+            lines.append(f"   【{s['signal_label']}】→ {s['action']}")
+        else:
+            lines.append(f"   现价{s['price']:.2f} | 成本{s['cost']:.2f} | 止盈{s['target_price']:.2f} | 止损{s['stop_price']:.2f}")
+            lines.append(f"   距止盈{s['to_target_pct']:.1f}% | 距止损{s['to_stop_pct']:.1f}%")
+            lines.append(f"   【{s['signal_label']}】→ {s['action']}")
+
+        # 波段模式额外显示买卖区间
+        if s.get("mode") in ("swing", "swing_only"):
+            if holdings_cfg and s["name"] in holdings_cfg:
+                buy_zones = holdings_cfg[s["name"]].get("swing_buy_zones", [])
+                sell_zones = holdings_cfg[s["name"]].get("swing_sell_zones", [])
+                batch = holdings_cfg[s["name"]].get("swing_batch_shares", 200)
+                lines.append(f"   📉 买入区: {','.join(str(z) for z in buy_zones)} (每批{batch}股)")
+                lines.append(f"   📈 卖出区: {','.join(str(z) for z in sell_zones)} (每批{batch}股)")
         lines.append("")
-
-        if r["signal"] in ("SWING_BUY", "SWING_SELL"):
-            lines.append(f"🔴 {name}: {r['label']}！{r['action']}")
-            has_action = True
 
     # 紫金矿业
     lines.append("━━━ 紫金矿业 ━━━")
-    if "紫金矿业" in watchlist:
-        data = fetch_stock(watchlist["紫金矿业"]["code"])
-        if "error" not in data and data["price"]:
-            p = data["price"]
-            bz = watchlist["紫金矿业"].get("buy_zones", [28])
-            chg = (p - data["prev_close"]) / data["prev_close"] * 100 if data["prev_close"] else 0
-            sign = "🔴" if chg < 0 else "🟢"
-            lines.append(f"⛏ 现价 {p:.2f} {sign}{chg:+.2f}%")
-            if p <= bz[0]:
-                lines.append(f"   ✅ 已进入第1批建仓区(<{bz[0]})")
+    found = False
+    for w in watch_results:
+        if "紫金" in w["name"]:
+            found = True
+            if w.get("price") and w["price"] != "N/A":
+                chg_str = f"{w.get('change',0):+.2f}%"
+                chg_sign = "🔴" if w.get('change',0) < 0 else ("🟢" if w.get('change',0) > 0 else "⚪")
+                lines.append(f"⛏ 现价 {w['price']:.2f} {chg_sign}{chg_str}")
+                # 检查建仓区间
+                buy_zones = w.get("buy_zones", [28, 26, 24])
+                if w["price"] <= buy_zones[0]:
+                    lines.append(f"   ✅ 已进入第1批建仓区(<{buy_zones[0]})")
+                else:
+                    lines.append(f"   第1批建仓区 ¥{buy_zones[0]}（差{(w['price']-buy_zones[0]):.2f}）")
             else:
-                lines.append(f"   第1批建仓区 ¥{bz[0]}（差{p-bz[0]:.2f}）")
-        else:
-            lines.append("   数据获取失败")
+                lines.append(f"   数据获取失败")
+            break
+    if not found:
+        lines.append("   未配置")
 
-    # AI标的
+    # AI标的池简要
     lines.append("")
     lines.append("━━━ AI标的 ━━━")
-    for name, cfg in watchlist.items():
-        if "紫金" in name:
+    for w in watch_results:
+        if "紫金" in w["name"]:
             continue
-        data = fetch_stock(cfg["code"])
-        if "error" not in data and data["price"]:
-            p = data["price"]
-            chg = (p - data["prev_close"]) / data["prev_close"] * 100 if data["prev_close"] else 0
-            sign = "🔴" if chg < 0 else "🟢"
-            lines.append(f"{sign} {name} ¥{p:.2f} {chg:+.2f}%")
+        if w.get("price") and w["price"] != "N/A":
+            chg_str = f"{w.get('change',0):+.2f}%"
+            chg_sign = "🔴" if w.get('change',0) < 0 else "🟢"
+            lines.append(f"{chg_sign} {w['name']} ¥{w['price']:.2f} {chg_str}")
+        else:
+            lines.append(f"⚪ {w['name']} 数据异常")
 
-    # 操作总结
+    # 操作提醒
     lines.append("")
     lines.append("━━━ 今日操作 ━━━")
-    if has_action:
-        pass  # 已在上面逐条标注了
+    has_action = False
+    for s in holdings_signals:
+        if s.get("signal") in ("SELL", "STOP"):
+            lines.append(f"🔴 {s['name']}: {s['signal_label']}！{s['action']}")
+            has_action = True
+        elif s.get("signal") in ("SWING_BUY", "SWING_SELL"):
+            lines.append(f"🔄 {s['name']}: {s['signal_label']}！{s['action']}")
+            has_action = True
+        elif s.get("signal") == "WARN":
+            lines.append(f"🟡 {s['name']}: 逼近止损，注意盯盘")
+            has_action = True
+    if not has_action:
+        lines.append(f"🟢 今日无操作信号，持有等待")
+    
+    lines.append(f"💡 {cash_status}")
+
+    return "\n".join(lines)
+
+def format_full(holdings_signals, watch_results, cash_status):
+    """完整控制台输出格式"""
+    lines = []
+    now = datetime.now()
+    lines.append("=" * 50)
+    lines.append(f"  波段猎手 · 每日盯盘 v2")
+    lines.append(f"  {now.strftime('%Y-%m-%d %H:%M')}")
+    lines.append("=" * 50)
+
+    lines.append("\n--- 持仓分析 ---")
+    for s in holdings_signals:
+        if s.get("status") == "error":
+            lines.append(f"  ❌ {s['name']}: {s['msg']}")
+            continue
+        lines.append(f"\n  {s['signal_emoji']} [{s['name']}] {s['code']}")
+        lines.append(f"  现价:{s['price']:.2f} | 成本:{s['cost']:.2f} | 涨跌:{s['change_pct']:+.2f}%")
+        lines.append(f"  今开:{s['open']:.2f} | 最高:{s['high']:.2f} | 最低:{s['low']:.2f}")
+        lines.append(f"  止盈:{s['target_price']:.2f}({s['to_target_pct']}%) | 止损:{s['stop_price']:.2f}({s['to_stop_pct']}%)")
+        lines.append(f"  >>> 信号:{s['signal_label']} → {s['action']}")
+
+    lines.append("\n--- 关注标的 ---")
+    for w in watch_results:
+        if w.get("price") and w["price"] != "N/A":
+            chg = f"{w.get('change',0):+.2f}%"
+            lines.append(f"  {w['name']} ({w.get('code','')}): {w['price']:.2f} {chg}")
+            if w.get("buy_zones"):
+                lines.append(f"    建仓区: <{w['buy_zones'][0]}")
+        else:
+            lines.append(f"  {w['name']}: 数据获取失败")
+
+    lines.append(f"\n--- 综合 ---")
+    lines.append(f"  {cash_status}")
+    lines.append("=" * 50)
+
+    return "\n".join(lines)
+
+# ========== 主流程 ==========
+def main():
+    holdings_cfg, watchlist_cfg = load_config()
+    if holdings_cfg is None:
+        return None, None
+
+    wechat_mode = "--wechat" in sys.argv
+
+    # 分析持仓
+    holdings_signals = []
+    for name, config in holdings_cfg.items():
+        data = fetch_stock_data(config["code"])
+        result = analyze_holding(name, config, data)
+        holdings_signals.append(result)
+
+    # 分析关注标的
+    watch_results = []
+    for name, config in watchlist_cfg.items():
+        data = fetch_stock_data(config["code"])
+        if "error" in data:
+            watch_results.append({
+                "name": name, "code": config["code"],
+                "price": "N/A", "note": config.get("note", ""),
+                "buy_zones": config.get("buy_zones", [])
+            })
+            continue
+        watch_results.append({
+            "name": name,
+            "code": config["code"],
+            "price": data["price"],
+            "change": round((data["price"] - data["prev_close"]) / data["prev_close"] * 100, 2) if data["prev_close"] else 0,
+            "note": config.get("note", ""),
+            "buy_zones": config.get("buy_zones", []),
+        })
+
+    # 仓位状态
+    has_cash = False  # 当前满仓
+    cash_status = "⚡仓位已满，无现金操作。等反弹到成本线优先减仓释放流动性。"
+
+    # 输出
+    if wechat_mode:
+        output = format_wechat(holdings_signals, watch_results, cash_status, holdings_cfg)
     else:
-        lines.append("🟢 今日无操作信号，持有等待")
+        output = format_full(holdings_signals, watch_results, cash_status)
 
-    # 交易处理日志
-    trade_log = generate_trade_log(applied_trades)
-    if trade_log:
-        lines.append(trade_log)
-
-    content = "\n".join(lines)
-
-    # 生成交易链接（替代内嵌表单）
-    trade_html = generate_trade_link()
-
-    # 推送到微信
-    result = push_wechat(f"波段猎手 · 周{dow}{PERIOD}", content, trade_html)
-    print(content)
-    print(f"\n[PushPlus] code={result.get('code')} msg={result.get('msg')}")
-
-    if applied_trades:
-        print("\n[提示] 交易已处理，holdings_config.json 已更新。")
-
-    return result
-
+    print(output)
+    return holdings_signals, watch_results
 
 if __name__ == "__main__":
-    run()
+    main()
