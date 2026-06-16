@@ -401,13 +401,13 @@ def generate_trade_link():
     """
     token = TRADE_TOKEN
 
-    # jsDelivr CDN 地址（无需启用 Pages，公开仓库即可）
-    cdn_url = f"https://cdn.jsdelivr.net/gh/{REPO}/main/trade.html"
+    # GitHub Pages 地址（已启用，稳定可靠）
+    pages_url = "https://shihui1997.github.io/stock-notifier/trade.html"
 
     if token:
-        link_url = f"{cdn_url}?t={token}"
+        link_url = f"{pages_url}?t={token}"
     else:
-        link_url = cdn_url
+        link_url = pages_url
 
     return f"""
 <div style="background:#1a2744;border-radius:10px;padding:16px;margin-top:10px;border-left:3px solid #3498db;text-align:center">
