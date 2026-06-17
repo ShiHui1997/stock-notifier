@@ -1,58 +1,30 @@
 {
-  "_说明": "波段猎手持仓配置，自动更新",
+  "_说明": "持仓配置文件。交易处理会自动更新cost和shares，无需手动修改。2026-06-17 根据实际持仓截图更新",
   "holdings": {
     "齐心集团": {
       "code": "sz002301",
-      "cost": 7.8,
-      "shares": 0,
+      "cost": 6.653,
+      "shares": 2500,
       "mode": "swing_only",
-      "stop_pct": -1.0,
-      "swing_buy_zones": [
-        7.2,
-        7.0,
-        6.7
-      ],
-      "swing_sell_zones": [
-        8.3,
-        8.6,
-        8.9
-      ],
-      "swing_batch_shares": 200
+      "swing_buy_zones": [6.4, 6.2, 5.9],
+      "swing_sell_zones": [8.2, 8.6, 9.0],
+      "swing_batch_shares": 400
     },
     "中油资本": {
       "code": "sz000617",
-      "cost": 8.37,
-      "shares": 1500,
+      "cost": 8.569,
+      "shares": 3500,
       "mode": "swing_only",
-      "stop_pct": -1.0,
-      "swing_buy_zones": [
-        7.0,
-        6.7,
-        6.3
-      ],
-      "swing_sell_zones": [
-        8.5,
-        9.2,
-        10.0
-      ],
-      "swing_batch_shares": 300
+      "swing_buy_zones": [6.8, 6.4, 6.0],
+      "swing_sell_zones": [9.0, 9.6, 10.5],
+      "swing_batch_shares": 500
     }
   },
   "watchlist": {
-    "紫金矿业": {
-      "code": "sh601899",
-      "buy_zones": [
-        28.0
-      ]
-    },
-    "金山办公": {
-      "code": "sh688111"
-    },
-    "科大讯飞": {
-      "code": "sz002230"
-    },
-    "海光信息": {
-      "code": "sh688041"
-    }
+    "紫金矿业": {"code": "sh601899", "buy_zones": [28.0, 26.0, 24.0]},
+    "金山办公": {"code": "sh688111"},
+    "科大讯飞": {"code": "sz002230"},
+    "海光信息": {"code": "sh688041"},
+    "中科曙光": {"code": "sh603019"}
   }
 }
