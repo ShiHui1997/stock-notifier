@@ -14,7 +14,7 @@ from datetime import datetime
 # ========== 导入所有模块 ==========
 try:
     from stock_indicators import calculate_all_indicators, generate_signal as gen_indicator_signal
-    from stock_backtest import WalkForwardBacktester, simple_moving_average_strategy, combined_strategy
+    from stock_backtest import WalkForwardBacktester, MultiScaleBacktester, simple_moving_average_strategy, combined_strategy
     from stock_news import analyze_stock_news, generate_news_summary
     from stock_self_learning import SelfLearningSystem
     from stock_strategy import MarketStateAnalyzer, DynamicStrategyScheduler
@@ -66,6 +66,66 @@ def fetch_realtime_data(stock_code):
         print(f"  [WARN] 获取 {stock_code} 数据异常: {e}")
 
     return None
+
+
+def fetch_history_data_akshare(stock_code, days=120):
+    """
+    使用akshare获取真实历史K线数据。
+    返回DataFrame（含日期/开盘/收盘/最高/最低/成交量/成交额），
+    或None表示获取失败。
+    """
+    import pandas as pd
+    try:
+        import akshare as ak
+    except ImportError:
+        print("  [INFO] akshare未安装，将使用模拟数据")
+        return None
+
+    # 清理代码格式（去掉sh/sz前缀）
+    code = stock_code
+    if code.startswith('sh') or code.startswith('sz'):
+        code = code[2:]
+
+    # 计算起始日期（往前推days天）
+    from datetime import datetime, timedelta
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
+    end_date = datetime.now().strftime('%Y%m%d')
+
+    try:
+        print(f"  📥 正在获取 {code} 近{days}天历史K线...")
+        df = ak.stock_zh_a_hist(
+            symbol=code,
+            period='daily',
+            start_date=start_date,
+            end_date=end_date,
+            adjust='qfq'  # 前复权
+        )
+
+        if df is None or df.empty:
+            print(f"  [WARN] akshare返回空数据: {code}")
+            return None
+
+        # 标准化列名（akshare返回中文列名，与系统一致）
+        col_map = {
+            '日期': '日期', '开盘': '开盘', '收盘': '收盘',
+            '最高': '最高', '最低': '最低', '成交量': '成交量',
+            '成交额': '成交额'
+        }
+        needed_cols = ['日期', '开盘', '收盘', '最高', '最低', '成交量']
+        if not all(c in df.columns for c in needed_cols):
+            print(f"  [WARN] akshare列名不匹配，当前列: {list(df.columns)}")
+            return None
+
+        # 确保'成交额'列存在（某些股票可能没有）
+        if '成交额' not in df.columns:
+            df['成交额'] = df['收盘'] * df['成交量']
+
+        print(f"  ✅ 获取到 {len(df)} 天历史数据 ({df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]})")
+        return df
+
+    except Exception as e:
+        print(f"  [WARN] akshare获取历史数据失败: {e}")
+        return None
 
 
 def build_dataframe_from_realtime(rt_data):
@@ -151,10 +211,29 @@ def analyze_single_stock(name, info, is_holding=True):
     result['change_pct'] = change_pct
     print(f"  💰 当前价: {current:.2f}  ({change_pct:+.2f}%)")
 
-    # --- Step 2: 技术指标 ---
+    # --- Step 2: 技术指标（优先用真实历史数据） ---
     try:
-        df = build_dataframe_from_realtime(rt)
-        df = calculate_all_indicators(df)
+        # 优先尝试akshare获取真实历史K线
+        hist_df = fetch_history_data_akshare(code, days=120)
+
+        if hist_df is not None:
+            # 用真实数据计算技术指标
+            df = calculate_all_indicators(hist_df)
+            # 将最新一天的实时数据覆盖到DataFrame末尾（保证价格是最新的）
+            last_idx = len(df) - 1
+            df.iloc[last_idx, df.columns.get_loc('开盘')] = rt['today_open']
+            df.iloc[last_idx, df.columns.get_loc('收盘')] = rt['current_price']
+            df.iloc[last_idx, df.columns.get_loc('最高')] = rt['today_high']
+            df.iloc[last_idx, df.columns.get_loc('最低')] = rt['today_low']
+            df.iloc[last_idx, df.columns.get_loc('成交量')] = rt['volume']
+            if '成交额' in df.columns:
+                df.iloc[last_idx, df.columns.get_loc('成交额')] = rt['amount']
+            print(f"  ✅ 使用真实K线数据 ({len(df)}天)")
+        else:
+            # akshare失败，降级为模拟数据
+            df = build_dataframe_from_realtime(rt)
+            df = calculate_all_indicators(df)
+            print(f"  ⚠️ 使用模拟数据（akshare不可用）")
         latest = df.iloc[-1]
 
         indicators = {
@@ -174,36 +253,88 @@ def analyze_single_stock(name, info, is_holding=True):
         result['indicators'] = {}
         print(f"  ⚠️ 技术指标计算异常: {e}")
 
-    # --- Step 3: 回测信号 ---
+    # --- Step 3: 回测信号（多尺度Walk-Forward） ---
     try:
         bt = WalkForwardBacktester()
         bt.data = df
-        backtest_result = bt.run_backtest(
-            strategy_func=combined_strategy,
-            strategy_params={'rsi_period': 14, 'ma_short': 5, 'ma_long': 20},
-            window_size=30,
-            step_size=10
-        )
 
-        signal_str = '持有观望'
-        if backtest_result and isinstance(backtest_result, dict):
-            total_trades = len(backtest_result.get('trades', []))
-            win_rate = backtest_result.get('win_rate', 0)
-            sharpe = backtest_result.get('sharpe_ratio', 0)
+        # 根据数据量动态调整回测参数
+        data_len = len(df)
+        if data_len >= 120:
+            # 真实数据：多尺度综合回测
+            ms = MultiScaleBacktester(
+                stock_code=code.replace('sh','').replace('sz',''),
+                start_date=df['日期'].iloc[0].replace('-',''),
+                end_date=df['日期'].iloc[-1].replace('-','')
+            )
+            ms.data = df
+            ms_result = ms.run_multi_scale_backtest(combined_strategy, {})
 
-            if indicators.get('SCORE', 0) >= 2:
-                signal_str = '偏多信号 ⬆️'
-            elif indicators.get('SCORE', 0) <= -2:
-                signal_str = '偏空信号 ⬇️'
+            if ms_result:
+                # 综合多尺度结果
+                win_rates = []
+                sharpe_values = []
+                total_trades = 0
+                for scale_name, scale_data in ms_result.items():
+                    if scale_data and 'summary' in scale_data:
+                        wr = scale_data['summary'].get('avg_win_rate', 0)
+                        sp = scale_data['summary'].get('avg_sharpe', 0)
+                        win_rates.append(wr)
+                        sharpe_values.append(sp)
+                    if scale_data and 'results' in scale_data:
+                        for r in scale_data['results']:
+                            if 'trades' in r:
+                                total_trades += len(r.get('trades', []))
 
-            result['backtest'] = {
-                'signal': signal_str,
-                'total_trades': total_trades,
-                'win_rate': round(win_rate * 100, 1) if win_rate else 0,
-                'sharpe': round(sharpe, 2) if sharpe else 0,
-            }
+                avg_win_rate = sum(win_rates) / len(win_rates) if win_rates else 0
+                avg_sharpe = sum(sharpe_values) / len(sharpe_values) if sharpe_values else 0
+
+                signal_str = '持有观望'
+                score_val = indicators.get('SCORE', 0)
+                if avg_win_rate > 55 and score_val >= 1:
+                    signal_str = '偏多信号 ⬆️'
+                elif avg_win_rate < 45 and score_val <= -1:
+                    signal_str = '偏空信号 ⬇️'
+
+                result['backtest'] = {
+                    'signal': signal_str,
+                    'total_trades': total_trades,
+                    'win_rate': round(avg_win_rate, 1),
+                    'sharpe': round(avg_sharpe, 2),
+                    'data_source': f'{data_len}天真实K线',
+                    'scales_tested': list(ms_result.keys()) if ms_result else [],
+                }
+            else:
+                result['backtest'] = {'signal': '持有观望', 'total_trades': 0, 'win_rate': 0, 'sharpe': 0, 'data_source': f'{data_len}天'}
         else:
-            result['backtest'] = {'signal': signal_str, 'total_trades': 0, 'win_rate': 0, 'sharpe': 0}
+            # 模拟数据：单窗口快速回测
+            backtest_result = bt.run_backtest(
+                strategy_func=combined_strategy,
+                strategy_params={'rsi_period': 14, 'ma_short': 5, 'ma_long': 20},
+                window_size=min(30, data_len // 2),
+                step_size=10
+            )
+
+            signal_str = '持有观望'
+            if backtest_result and isinstance(backtest_result, dict):
+                total_trades = len(backtest_result.get('trades', []))
+                win_rate = backtest_result.get('win_rate', 0)
+                sharpe = backtest_result.get('sharpe_ratio', 0)
+
+                if indicators.get('SCORE', 0) >= 2:
+                    signal_str = '偏多信号 ⬆️'
+                elif indicators.get('SCORE', 0) <= -2:
+                    signal_str = '偏空信号 ⬇️'
+
+                result['backtest'] = {
+                    'signal': signal_str,
+                    'total_trades': total_trades,
+                    'win_rate': round(win_rate * 100, 1) if win_rate else 0,
+                    'sharpe': round(sharpe, 2) if sharpe else 0,
+                    'data_source': f'{data_len}天模拟数据',
+                }
+            else:
+                result['backtest'] = {'signal': '持有观望', 'total_trades': 0, 'win_rate': 0, 'sharpe': 0, 'data_source': f'{data_len}天'}
         print(f"  🔄 回测信号: {signal_str}")
     except Exception as e:
         result['backtest'] = {'signal': '计算异常', 'total_trades': 0, 'win_rate': 0, 'sharpe': 0}
@@ -372,7 +503,8 @@ def format_report(results, session):
   📈 评分: {ind.get('SCORE', 'N/A')} | RSI: {ind.get('RSI', 'N/A')}
      MACD: {ind.get('MACD_SIGNAL', 'N/A')} | KDJ: {ind.get('KDJ_SIGNAL', 'N/A')}
      BOLL: {ind.get('BOLL_SIGNAL', 'N/A')}
-  🔄 回测: {bt.get('signal', 'N/A')} (胜率: {bt.get('win_rate', 0)}%)
+  🔄 回测: {bt.get('signal', 'N/A')} (胜率: {bt.get('win_rate', 0)}% | 夏普: {bt.get('sharpe', 0)})
+     └─ 数据源: {bt.get('data_source', 'N/A')}
   💡 建议: {sug['action']}
      └─ {sug['reason']}"""
 
