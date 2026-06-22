@@ -1,0 +1,30 @@
+# 股票量化分析系统 V3 - 依赖包
+
+# 核心依赖
+requests>=2.28.0
+pandas>=1.5.0
+numpy>=1.24.0
+
+# 技术指标库（可选，系统自带实现）
+# ta-lib>=0.4.24  # 需要预编译，Windows安装较复杂
+
+# 数据获取
+akshare>=1.11.0  # A股数据接口
+
+# 时间处理
+python-dateutil>=2.8.2
+
+# JSON处理（内置，无需安装）
+# 网络请求（内置，无需安装）
+
+# 注意：
+# 1. ta-lib 在Windows上安装需要先下载预编译wheel
+#    网址：https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib
+# 2. akshare 需要网络访问，GitHub Actions环境通常可以访问
+# 3. 如果网络受限，可以只使用新浪财经API（requests即可）
+
+# 最小安装（仅使用新浪API）：
+# pip install requests pandas numpy
+
+# 完整安装（使用akshare获取历史数据）：
+# pip install requests pandas numpy akshare

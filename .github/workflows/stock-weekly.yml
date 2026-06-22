@@ -1,0 +1,38 @@
+name: Stock Weekly Correction
+
+on:
+  schedule:
+    - cron: '0 9 * * 0'  # 每周日早上9点运行
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  weekly-correction:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy
+          pip install akshare  # 如果需要历史数据
+      
+      - name: Run weekly correction
+        env:
+          PUSH_PLUS_TOKEN: ${{ secrets.PUSH_PLUS_TOKEN }}
+        run: |
+          python stock_notifier_v3.py weekely
+      
+      - name: Commit and push learning data
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/*.json
+          git diff --staging --quiet || git commit -m "Update learning data - Weekly correction"
+          git push
