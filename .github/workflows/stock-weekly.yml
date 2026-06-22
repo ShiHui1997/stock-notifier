@@ -27,12 +27,13 @@ jobs:
         env:
           PUSH_PLUS_TOKEN: ${{ secrets.PUSH_PLUS_TOKEN }}
         run: |
-          python stock_notifier_v3.py weekely
+          python stock_notifier_v3.py weekly
       
       - name: Commit and push learning data
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add data/*.json
+          mkdir -p data
+          git add data/*.json || true
           git diff --staging --quiet || git commit -m "Update learning data - Weekly correction"
           git push

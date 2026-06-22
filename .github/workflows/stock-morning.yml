@@ -1,4 +1,4 @@
-name: Stock Notifier V2 - 早盘分析 (9:00)
+name: Stock Notifier V3 - 早盘分析 (9:00)
 
 on:
   schedule:
@@ -30,7 +30,7 @@ jobs:
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PERIOD: 早盘
-        run: python stock_notifier_v2.py
+        run: python stock_notifier_v3.py
       
       - name: Commit updated config (if changed)
         run: |
