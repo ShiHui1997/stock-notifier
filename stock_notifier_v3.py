@@ -70,15 +70,16 @@ def fetch_realtime_data(stock_code):
 
 def fetch_history_data_akshare(stock_code, days=120):
     """
-    使用akshare获取真实历史K线数据。
+    [数据源1/3] 使用akshare获取真实历史K线数据。
     返回DataFrame（含日期/开盘/收盘/最高/最低/成交量/成交额），
     或None表示获取失败。
     """
     import pandas as pd
+    import traceback
     try:
         import akshare as ak
     except ImportError:
-        print("  [INFO] akshare未安装，将使用模拟数据")
+        print("  [数据源1-akshare] 未安装，跳过")
         return None
 
     # 清理代码格式（去掉sh/sz前缀）
@@ -92,7 +93,7 @@ def fetch_history_data_akshare(stock_code, days=120):
     end_date = datetime.now().strftime('%Y%m%d')
 
     try:
-        print(f"  📥 正在获取 {code} 近{days}天历史K线...")
+        print(f"  [数据源1-akshare] 正在获取 {code} 近{days}天历史K线...")
         df = ak.stock_zh_a_hist(
             symbol=code,
             period='daily',
@@ -102,37 +103,125 @@ def fetch_history_data_akshare(stock_code, days=120):
         )
 
         if df is None or df.empty:
-            print(f"  [WARN] akshare返回空数据: {code}")
+            print(f"  [数据源1-akshare] 返回空数据: {code}")
             return None
 
         # 标准化列名（akshare返回中文列名，与系统一致）
-        col_map = {
-            '日期': '日期', '开盘': '开盘', '收盘': '收盘',
-            '最高': '最高', '最低': '最低', '成交量': '成交量',
-            '成交额': '成交额'
-        }
         needed_cols = ['日期', '开盘', '收盘', '最高', '最低', '成交量']
         if not all(c in df.columns for c in needed_cols):
-            print(f"  [WARN] akshare列名不匹配，当前列: {list(df.columns)}")
+            print(f"  [数据源1-akshare] 列名不匹配，当前列: {list(df.columns)}")
             return None
 
         # 确保'成交额'列存在（某些股票可能没有）
         if '成交额' not in df.columns:
             df['成交额'] = df['收盘'] * df['成交量']
 
-        print(f"  ✅ 获取到 {len(df)} 天历史数据 ({df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]})")
+        print(f"  ✅ [akshare成功] 获取到 {len(df)} 天历史数据 ({df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]})")
         return df
 
     except Exception as e:
-        print(f"  [WARN] akshare获取历史数据失败: {e}")
+        print(f"  [数据源1-akshare] 失败: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return None
+
+
+def fetch_history_data_eastmoney(stock_code, days=120):
+    """
+    [数据源2/3] 使用东方财富HTTP直连API获取历史K线数据。
+    使用urllib.request（与新浪实时行情一致），无需额外依赖。
+    返回DataFrame或None。
+    东方财富K-line API: push2his.eastmoney.com
+    深市secid格式: 0.xxxxxx   沪市secid格式: 1.xxxxxx
+    klines每行格式: 日期,开盘,收盘,最高,最低,成交量,成交额,...
+    """
+    import pandas as pd
+    import urllib.request
+    import traceback
+
+    # 转换为东方财富 secid 格式
+    code = stock_code
+    if code.startswith('sz'):
+        pure_code = code[2:]
+        secid = f'0.{pure_code}'  # 深市
+    elif code.startswith('sh'):
+        pure_code = code[2:]
+        secid = f'1.{pure_code}'  # 沪市
+    else:
+        # 纯数字代码判断
+        if code.startswith('6'):
+            secid = f'1.{code}'  # 6开头=沪市
+        else:
+            secid = f'0.{code}'  # 其他=深市
+        pure_code = code
+
+    from datetime import datetime, timedelta
+    end_date = datetime.now().strftime('%Y%m%d')
+
+    url = (
+        f'http://push2his.eastmoney.com/api/qt/stock/kline/get'
+        f'?secid={secid}'
+        f'&fields1=f1,f2,f3,f4,f5,f6'
+        f'&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'
+        f'&klt=101'       # 101=日K
+        f'&fqt=1'         # 1=前复权
+        f'&end={end_date}'
+        f'&lmt={days}'     # 返回天数
+    )
+
+    headers = {
+        'Referer': 'http://quote.eastmoney.com',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+
+    try:
+        print(f"  [数据源2-东方财富] 正在获取 {pure_code} 近{days}天历史K线...")
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode('utf-8')
+
+        data = json.loads(raw)
+
+        if data.get('rc') != 0 or not data.get('data'):
+            print(f"  [数据源2-东方财富] API返回错误: rc={data.get('rc')}, has_data={bool(data.get('data'))}")
+            return None
+
+        klines = data['data'].get('klines', [])
+        if not klines:
+            print(f"  [数据源2-东方财富] K线数据为空（可能停牌或退市）")
+            return None
+
+        # 解析kline字符串 → DataFrame
+        rows = []
+        for line in klines:
+            parts = line.split(',')
+            if len(parts) >= 7:
+                rows.append({
+                    '日期': parts[0],
+                    '开盘': float(parts[1]),
+                    '收盘': float(parts[2]),
+                    '最高': float(parts[3]),
+                    '最低': float(parts[4]),
+                    '成交量': int(float(parts[5])),
+                    '成交额': float(parts[6]),
+                })
+
+        df = pd.DataFrame(rows)
+        print(f"  ✅ [东方财富成功] 获取到 {len(df)} 天历史数据 ({df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]})")
+        return df
+
+    except json.JSONDecodeError as e:
+        print(f"  [数据源2-东方财富] JSON解析失败（可能被限制）: {e}")
+        return None
+    except Exception as e:
+        print(f"  [数据源2-东方财富] 失败: {type(e).__name__}: {e}")
+        traceback.print_exc()
         return None
 
 
 def build_dataframe_from_realtime(rt_data):
     """
-    从实时数据构建最小DataFrame用于指标计算。
-    由于没有历史K线，生成一个模拟的最近N天数据帧，
-    用当前价格填充，让技术指标能算出初始值而不崩溃。
+    [数据源3/3 - 兜底] 从实时数据构建模拟DataFrame。
+    仅在前两个真实数据源都失败时才使用！
     """
     import pandas as pd
     import numpy as np
@@ -211,15 +300,32 @@ def analyze_single_stock(name, info, is_holding=True):
     result['change_pct'] = change_pct
     print(f"  💰 当前价: {current:.2f}  ({change_pct:+.2f}%)")
 
-    # --- Step 2: 技术指标（优先用真实历史数据） ---
+    # --- Step 2: 技术指标（三级数据源降级策略） ---
+    # 优先级: 1.akshare → 2.东方财富直连 → 3.模拟兜底
+    data_source = '未知'
     try:
-        # 优先尝试akshare获取真实历史K线
-        hist_df = fetch_history_data_akshare(code, days=120)
+        hist_df = None
 
+        # [第1级] 尝试akshare
+        hist_df = fetch_history_data_akshare(code, days=120)
         if hist_df is not None:
-            # 用真实数据计算技术指标
+            data_source = f'{len(hist_df)}天(akshare)'
+
+        # [第2级] akshare失败，尝试东方财富直连
+        if hist_df is None:
+            hist_df = fetch_history_data_eastmoney(code, days=120)
+            if hist_df is not None:
+                data_source = f'{len(hist_df)}天(东方财富)'
+
+        # [第3级] 兜底：模拟数据（仅当真实数据源都失败）
+        if hist_df is None:
+            df = build_dataframe_from_realtime(rt)
+            df = calculate_all_indicators(df)
+            data_source = f'{len(df)}天(⚠️模拟)'
+            print(f"  ⚠️ 所有真实数据源均失败，使用{data_source}")
+        else:
+            # 真实数据：计算指标 + 覆盖最新价格为实时值
             df = calculate_all_indicators(hist_df)
-            # 将最新一天的实时数据覆盖到DataFrame末尾（保证价格是最新的）
             last_idx = len(df) - 1
             df.iloc[last_idx, df.columns.get_loc('开盘')] = rt['today_open']
             df.iloc[last_idx, df.columns.get_loc('收盘')] = rt['current_price']
@@ -228,12 +334,7 @@ def analyze_single_stock(name, info, is_holding=True):
             df.iloc[last_idx, df.columns.get_loc('成交量')] = rt['volume']
             if '成交额' in df.columns:
                 df.iloc[last_idx, df.columns.get_loc('成交额')] = rt['amount']
-            print(f"  ✅ 使用真实K线数据 ({len(df)}天)")
-        else:
-            # akshare失败，降级为模拟数据
-            df = build_dataframe_from_realtime(rt)
-            df = calculate_all_indicators(df)
-            print(f"  ⚠️ 使用模拟数据（akshare不可用）")
+            print(f"  ✅ 使用真实K线: {data_source}")
         latest = df.iloc[-1]
 
         indicators = {
@@ -301,11 +402,11 @@ def analyze_single_stock(name, info, is_holding=True):
                     'total_trades': total_trades,
                     'win_rate': round(avg_win_rate, 1),
                     'sharpe': round(avg_sharpe, 2),
-                    'data_source': f'{data_len}天真实K线',
+                    'data_source': data_source,
                     'scales_tested': list(ms_result.keys()) if ms_result else [],
                 }
             else:
-                result['backtest'] = {'signal': '持有观望', 'total_trades': 0, 'win_rate': 0, 'sharpe': 0, 'data_source': f'{data_len}天'}
+                result['backtest'] = {'signal': '持有观望', 'total_trades': 0, 'win_rate': 0, 'sharpe': 0, 'data_source': data_source}
         else:
             # 模拟数据：单窗口快速回测
             backtest_result = bt.run_backtest(
@@ -331,10 +432,10 @@ def analyze_single_stock(name, info, is_holding=True):
                     'total_trades': total_trades,
                     'win_rate': round(win_rate * 100, 1) if win_rate else 0,
                     'sharpe': round(sharpe, 2) if sharpe else 0,
-                    'data_source': f'{data_len}天模拟数据',
+                    'data_source': data_source,
                 }
             else:
-                result['backtest'] = {'signal': '持有观望', 'total_trades': 0, 'win_rate': 0, 'sharpe': 0, 'data_source': f'{data_len}天'}
+                result['backtest'] = {'signal': '持有观望', 'total_trades': 0, 'win_rate': 0, 'sharpe': 0, 'data_source': data_source}
         print(f"  🔄 回测信号: {signal_str}")
     except Exception as e:
         result['backtest'] = {'signal': '计算异常', 'total_trades': 0, 'win_rate': 0, 'sharpe': 0}
