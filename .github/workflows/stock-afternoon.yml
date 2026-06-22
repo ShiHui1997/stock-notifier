@@ -1,9 +1,6 @@
 name: Stock Afternoon Report (尾盘 14:20)
 
 on:
-  schedule:
-    # UTC 6:20 = 北京时间 14:20
-    - cron: '50 6 * * 1-5'
   workflow_dispatch:
 
 permissions:
