@@ -1,9 +1,6 @@
 name: Stock Morning Report (早盘 9:00)
 
 on:
-  schedule:
-    # UTC 1:00 = 北京时间 9:00
-   - cron: '20 1 * * 1-5'
   workflow_dispatch:
 
 permissions:
