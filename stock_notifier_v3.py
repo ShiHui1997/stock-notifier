@@ -536,6 +536,14 @@ def run_weekly():
 if __name__ == '__main__':
     mode = sys.argv[1] if len(sys.argv) > 1 else ''
 
+    # 兜底：从环境变量读取模式（yml可能通过env传参）
+    if not mode:
+        mode = os.environ.get('PERIOD', os.environ.get('MODE', ''))
+        if mode == '尾盘':
+            mode = 'afternoon'
+        elif mode == '早盘':
+            mode = 'morning'
+
     if mode == 'weekly':
         run_weekly()
     elif mode in ('afternoon', 'afternoon_analysis'):

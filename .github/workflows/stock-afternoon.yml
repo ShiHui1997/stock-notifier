@@ -30,7 +30,7 @@ jobs:
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PERIOD: 尾盘
-        run: python stock_notifier_v3.py
+        run: python stock_notifier_v3.py afternoon
       
       - name: Commit updated config (if changed)
         run: |
