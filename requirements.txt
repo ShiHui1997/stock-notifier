@@ -8,8 +8,9 @@ numpy>=1.24.0
 # 技术指标库（可选，系统自带实现）
 # ta-lib>=0.4.24  # 需要预编译，Windows安装较复杂
 
-# 数据获取
-akshare>=1.11.0  # A股数据接口
+# 数据获取（多源降级）
+akshare>=1.11.0  # A股数据接口（国内网络）
+yfinance>=0.2.30 # Yahoo Finance国际数据接口（GitHub Actions海外环境首选）
 
 # 时间处理
 python-dateutil>=2.8.2

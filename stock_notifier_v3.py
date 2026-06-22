@@ -68,11 +68,96 @@ def fetch_realtime_data(stock_code):
     return None
 
 
+# ============================================================
+# 历史K线数据获取（多级降级策略）
+# 优先级: Yahoo Finance(国际) → akshare(国内) → 东方财富(国内) → 模拟兜底
+# ============================================================
+
+def _code_to_yahoo_ticker(stock_code):
+    """将内部股票代码转换为Yahoo Finance ticker格式"""
+    code = stock_code
+    if code.startswith('sz'):
+        return f'{code[2:]}.SZ'
+    elif code.startswith('sh'):
+        return f'{code[2:]}.SH'
+    else:
+        # 纯数字：6开头=沪市，其他=深市
+        if code.startswith('6'):
+            return f'{code}.SH'
+        else:
+            return f'{code}.SZ'
+
+
+def fetch_history_data_yahoo(stock_code, days=120):
+    """
+    [数据源1/4] 使用yfinance获取Yahoo Finance历史数据。
+    Yahoo Finance是美国服务，GitHub Actions(美国)可稳定访问，不受中国API地域限制。
+    返回标准化DataFrame或None。
+    """
+    import pandas as pd
+    import traceback
+
+    try:
+        import yfinance as yf
+    except ImportError:
+        print("  [数据源1-Yahoo] yfinance未安装，跳过")
+        return None
+
+    ticker = _code_to_yahoo_ticker(stock_code)
+    
+    try:
+        print(f"  [数据源1-Yahoo] 正在获取 {ticker} 近{days}天历史K线...")
+        
+        # period映射: days -> yfinance period string
+        if days <= 30:
+            period = '1mo'
+        elif days <= 60:
+            period = '2mo'
+        elif days <= 120:
+            period = '4mo'
+        else:
+            period = '6mo'
+        
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=period, auto_adjust=True)
+
+        if hist is None or hist.empty:
+            print(f"  [数据源1-Yahoo] 返回空数据: {ticker}")
+            return None
+
+        # Yahoo返回英文列名 → 标准化为中文列名（与系统一致）
+        df = pd.DataFrame({
+            '日期': hist.index.strftime('%Y-%m-%d'),
+            '开盘': hist['Open'].values,
+            '收盘': hist['Close'].values,
+            '最高': hist['High'].values,
+            '最低': hist['Low'].values,
+            '成交量': hist['Volume'].values.astype(int),
+            '成交额': (hist['Close'] * hist['Volume']).values,
+        })
+
+        # 过滤掉成交量为0的行（可能为休市/异常数据）
+        df = df[df['成交量'] > 0].reset_index(drop=True)
+
+        print(f"  ✅ [Yahoo成功] 获取到 {len(df)} 天历史数据 ({df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]})")
+        return df
+
+    except Exception as e:
+        err_type = type(e).__name__
+        print(f"  [数据源1-Yahoo] 失败: {err_type}: {e}")
+        # 不打印完整traceback避免刷屏（限流等是常见情况）
+        if 'RateLimit' in err_type or 'rate' in str(e).lower():
+            print(f"  [数据源1-Yahoo] 提示: Yahoo限流通常是临时的，下次运行会自动恢复")
+        else:
+            traceback.print_exc()
+        return None
+
+
 def fetch_history_data_akshare(stock_code, days=120):
     """
-    [数据源1/3] 使用akshare获取真实历史K线数据。
+    [数据源2/4] 使用akshare获取真实历史K线数据。
     返回DataFrame（含日期/开盘/收盘/最高/最低/成交量/成交额），
-    或None表示获取失败。
+    或None表示获取失败。注意：GitHub Actions(海外)可能无法访问此数据源。
     """
     import pandas as pd
     import traceback
@@ -127,9 +212,10 @@ def fetch_history_data_akshare(stock_code, days=120):
 
 def fetch_history_data_eastmoney(stock_code, days=120):
     """
-    [数据源2/3] 使用东方财富HTTP直连API获取历史K线数据。
+    [数据源3/4] 使用东方财富HTTP直连API获取历史K线数据。
     使用urllib.request（与新浪实时行情一致），无需额外依赖。
     返回DataFrame或None。
+    注意：GitHub Actions(海外)可能无法访问此数据源。
     东方财富K-line API: push2his.eastmoney.com
     深市secid格式: 0.xxxxxx   沪市secid格式: 1.xxxxxx
     klines每行格式: 日期,开盘,收盘,最高,最低,成交量,成交额,...
@@ -174,7 +260,7 @@ def fetch_history_data_eastmoney(stock_code, days=120):
     }
 
     try:
-        print(f"  [数据源2-东方财富] 正在获取 {pure_code} 近{days}天历史K线...")
+        print(f"  [数据源3-东方财富] 正在获取 {pure_code} 近{days}天历史K线...")
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read().decode('utf-8')
@@ -220,8 +306,8 @@ def fetch_history_data_eastmoney(stock_code, days=120):
 
 def build_dataframe_from_realtime(rt_data):
     """
-    [数据源3/3 - 兜底] 从实时数据构建模拟DataFrame。
-    仅在前两个真实数据源都失败时才使用！
+    [数据源4/4 - 兜底] 从实时数据构建模拟DataFrame。
+    仅在前三个真实数据源都失败时才使用！
     """
     import pandas as pd
     import numpy as np
@@ -300,24 +386,31 @@ def analyze_single_stock(name, info, is_holding=True):
     result['change_pct'] = change_pct
     print(f"  💰 当前价: {current:.2f}  ({change_pct:+.2f}%)")
 
-    # --- Step 2: 技术指标（三级数据源降级策略） ---
-    # 优先级: 1.akshare → 2.东方财富直连 → 3.模拟兜底
+    # --- Step 2: 技术指标（四级数据源降级策略） ---
+    # 优先级: 1.Yahoo Finance(国际) → 2.akshare(国内) → 3.东方财富(国内) → 4.模拟兜底
+    # Yahoo Finance从GitHub Actions(美国)可稳定访问；中国API在海外可能被封锁
     data_source = '未知'
     try:
         hist_df = None
 
-        # [第1级] 尝试akshare
-        hist_df = fetch_history_data_akshare(code, days=120)
+        # [第1级] Yahoo Finance（国际数据源，GA环境最可靠）
+        hist_df = fetch_history_data_yahoo(code, days=120)
         if hist_df is not None:
-            data_source = f'{len(hist_df)}天(akshare)'
+            data_source = f'{len(hist_df)}天(Yahoo)'
 
-        # [第2级] akshare失败，尝试东方财富直连
+        # [第2级] akshare
+        if hist_df is None:
+            hist_df = fetch_history_data_akshare(code, days=120)
+            if hist_df is not None:
+                data_source = f'{len(hist_df)}天(akshare)'
+
+        # [第3级] 东方财富直连
         if hist_df is None:
             hist_df = fetch_history_data_eastmoney(code, days=120)
             if hist_df is not None:
                 data_source = f'{len(hist_df)}天(东方财富)'
 
-        # [第3级] 兜底：模拟数据（仅当真实数据源都失败）
+        # [第4级] 兜底：模拟数据（仅当所有真实数据源都失败）
         if hist_df is None:
             df = build_dataframe_from_realtime(rt)
             df = calculate_all_indicators(df)
